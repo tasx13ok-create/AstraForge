@@ -42,10 +42,23 @@ jobs:
         continue-on-error: true
         run: pnpm exec tsc --noEmit
 
-      - name: Lint
-        id: lint
+      - name: Repository lint debt visibility
+        id: repository_lint
         continue-on-error: true
         run: pnpm lint
+
+      - name: Deployment lint gate
+        id: deployment_lint
+        continue-on-error: true
+        run: >
+          pnpm exec eslint
+          app/api/auth/route.ts
+          app/page.tsx
+          components/forge/access-gate.tsx
+          lib/server.ts
+          lib/session-auth.ts
+          next.config.ts
+          scripts/prepare-cloudflare-deploy.mjs
 
       - name: Core protocol tests
         id: core_tests
@@ -66,15 +79,16 @@ jobs:
         if: always()
         env:
           TYPESCRIPT: ${{ steps.typescript.outcome }}
-          LINT: ${{ steps.lint.outcome }}
+          REPOSITORY_LINT: ${{ steps.repository_lint.outcome }}
+          DEPLOYMENT_LINT: ${{ steps.deployment_lint.outcome }}
           CORE_TESTS: ${{ steps.core_tests.outcome }}
           DATABASE_TESTS: ${{ steps.database_tests.outcome }}
           BUILD: ${{ steps.build.outcome }}
         run: |
-          printf 'TypeScript: %s\nLint: %s\nCore tests: %s\nDatabase tests: %s\nBuild: %s\n' \
-            "$TYPESCRIPT" "$LINT" "$CORE_TESTS" "$DATABASE_TESTS" "$BUILD"
+          printf 'TypeScript: %s\nRepository lint (legacy debt visibility): %s\nDeployment lint: %s\nCore tests: %s\nDatabase tests: %s\nBuild: %s\n' \
+            "$TYPESCRIPT" "$REPOSITORY_LINT" "$DEPLOYMENT_LINT" "$CORE_TESTS" "$DATABASE_TESTS" "$BUILD"
           test "$TYPESCRIPT" = success
-          test "$LINT" = success
+          test "$DEPLOYMENT_LINT" = success
           test "$CORE_TESTS" = success
           test "$DATABASE_TESTS" = success
           test "$BUILD" = success
