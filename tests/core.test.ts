@@ -110,6 +110,8 @@ test('manual model routing never silently switches providers',()=>{
  assert.deepEqual(selectChatRoutes(routes),routes);
  assert.deepEqual(selectChatRoutes(routes,'openai','gpt-custom'),[{provider:'openai',model:'gpt-custom',secret:'a'}]);
  assert.throws(()=>selectChatRoutes(routes,'google','gemini-custom'),/not connected/);
+ const agentRoutes=[{provider:'openai',model:'default-openai'},{provider:'anthropic',model:'default-anthropic'}];
+ assert.deepEqual(selectChatRoutes(agentRoutes,'anthropic','claude-custom'),[{provider:'anthropic',model:'claude-custom'}]);
 });
 test('configured custom model remains selectable without discovery',()=>{
  const items=buildModelPickerItems([],[{provider:'openai',model:'gpt-custom'},{provider:'browserbase',model:'default'}]);

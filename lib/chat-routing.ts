@@ -1,6 +1,6 @@
-export type InferenceRoute={provider:string;model:string;secret:string};
+export type InferenceRoute={provider:string;model:string};
 
-export function selectChatRoutes(routes:InferenceRoute[],preferred?:unknown,model?:unknown){
+export function selectChatRoutes<T extends InferenceRoute>(routes:T[],preferred?:unknown,model?:unknown){
  if(preferred===undefined||preferred===null||preferred==='')return routes;
  if(typeof preferred!=='string'||preferred.length>80)throw new Error('Invalid preferred provider.');
  const match=routes.find(route=>route.provider===preferred);
