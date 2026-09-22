@@ -1,7 +1,12 @@
 import type { NextConfig } from "next";
 
+const productionApiOrigin = "https://astraforge-production.tasx13ok.workers.dev";
+
 function apiOrigin() {
-  const raw = process.env.ASTRA_API_ORIGIN?.trim();
+  const configured = process.env.ASTRA_API_ORIGIN?.trim();
+  const raw =
+    configured ||
+    (process.env.NODE_ENV === "production" ? productionApiOrigin : "");
   if (!raw) return null;
   const url = new URL(raw);
   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
