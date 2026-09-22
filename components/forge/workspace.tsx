@@ -17,6 +17,7 @@ import AgentPanel from './agent-panel';
 import {templates,validateFiles,type Files as FileMap} from '@/lib/templates';
 import {providerCatalog} from '@/lib/providers';
 import {models,pluginCatalog} from '@/lib/models';
+import {buildModelPickerItems,manualModelNeedsConnection} from '@/lib/model-picker-items';
 import {zipSync,strToU8,unzipSync,strFromU8} from 'fflate';
 
 type Project={id:string;name:string;files:FileMap;revision:number;updated:string};
@@ -95,15 +96,12 @@ export default function Workspace(){
  useEffect(()=>{void Promise.allSettled([discover('openrouter'),discover('ollama')]);},[discover]);
  useEffect(()=>{try{const v=JSON.parse(localStorage.getItem('astra-model-preferences')||'null');if(v){if(typeof v.model==='string')setSelectedModel(v.model);if(['auto','low','medium','high'].includes(v.reasoning))setReasoning(v.reasoning);if([1024,4096,8192,16384,32768].includes(v.maxTokens))setMaxTokens(v.maxTokens);}}catch{}},[]);
  const setModelPreference=(value:string)=>{setSelectedModel(value);localStorage.setItem('astra-model-preferences',JSON.stringify({model:value,reasoning,maxTokens}));const split=value.indexOf(':');const prov=value.slice(0,split);if(value!=='auto'&&!connections.some(c=>c.provider===prov)){changeProvider(prov);setModelInput(value.slice(split+1));setSettingsTab('engines');setModal('settings');}};
- const modelItems=useMemo(()=>Array.from(new Map([
- {value:'auto',label:'Astra Max · Auto route'},
- ...discoveredModels.map(m=>({value:m.provider+':'+m.id,label:m.label+' · '+providerCatalog[m.provider]?.label+(connections.some(c=>c.provider===m.provider)?'':' · connect')})),
- ...connections.filter(c=>discoveredModels.some(m=>m.provider===c.provider&&m.id===c.model)).map(c=>({value:c.provider+':'+c.model,label:c.model+' · '+providerCatalog[c.provider]?.label+' · configured'}))
- ].map(m=>[m.value,m])).values()),[connections,discoveredModels]);
+ const modelItems=useMemo(()=>buildModelPickerItems(discoveredModels,connections),[connections,discoveredModels]);
  const hasAI=connections.some(c=>['openai','anthropic','google'].includes(providerCatalog[c.provider]?.kind));
  const startChat=async(override?:string)=>{
  const text=(override||chatText).trim();if(!text||streaming||!project)return;
  if(!hasAI){setSettingsTab('engines');setModal('settings');toast('Connect an AI engine to send your first message.');return;}
+ if(manualModelNeedsConnection(selectedModel,connections)){setSettingsTab('engines');setModal('settings');toast('The selected model provider is not connected. Connect it or choose Astra Max · Auto route.');return;}
  if(!await save())return;
  setChatText('');setMetrics({});setStreaming(true);setChatStatus('Thinking…');const userId=clientId(),assistantId=clientId();setMessages(m=>[...m,{id:userId,role:'user',content:text,status:'complete',revision:projectRef.current!.revision},{id:assistantId,role:'assistant',content:'',status:'streaming',revision:projectRef.current!.revision}]);controller.current=new AbortController();let output='';
  try{

@@ -102,3 +102,20 @@ test('Browserbase plan and session errors do not ask for a separate project id',
  assert.match(providerHint(429,'rate_limit','browserbase'),/active sessions/);
  assert.doesNotMatch(providerHint(400,'bad_request','browserbase'),/project ID/i);
 });
+
+import {selectChatRoutes} from '../lib/chat-routing.ts';
+import {buildModelPickerItems,manualModelNeedsConnection} from '../lib/model-picker-items.ts';
+test('manual model routing never silently switches providers',()=>{
+ const routes=[{provider:'openai',model:'default-openai',secret:'a'},{provider:'anthropic',model:'default-anthropic',secret:'b'}];
+ assert.deepEqual(selectChatRoutes(routes),routes);
+ assert.deepEqual(selectChatRoutes(routes,'openai','gpt-custom'),[{provider:'openai',model:'gpt-custom',secret:'a'}]);
+ assert.throws(()=>selectChatRoutes(routes,'google','gemini-custom'),/not connected/);
+});
+test('configured custom model remains selectable without discovery',()=>{
+ const items=buildModelPickerItems([],[{provider:'openai',model:'gpt-custom'},{provider:'browserbase',model:'default'}]);
+ assert(items.some(item=>item.value==='openai:gpt-custom'&&item.label.includes('configured')));
+ assert(!items.some(item=>item.value==='browserbase:default'));
+ assert.equal(manualModelNeedsConnection('openai:gpt-custom',[{provider:'openai',model:'gpt-custom'}]),false);
+ assert.equal(manualModelNeedsConnection('openai:gpt-custom',[]),true);
+ assert.equal(manualModelNeedsConnection('auto',[]),false);
+});
