@@ -166,3 +166,20 @@ test('browser socket falls back to a standard WebSocket client',async()=>{
  const result=await openBrowserSocket('wss://connect.browserbase.com/test',{fetcher:async()=>{throw new Error('upgrade unsupported');},WebSocketCtor:FakeSocket,timeoutMs:1000});
  assert(result instanceof FakeSocket);
 });
+
+
+import {cookieValue,issueSession,secureEqual,verifySession} from '../lib/session-auth.ts';
+test('portable sessions are signed, expiring, and reject tampering',async()=>{
+ const issued=await issueSession('owner-1','session-secret',60,1000);
+ assert.equal(await verifySession(issued,'session-secret',2000),'owner-1');
+ assert.equal(await verifySession(issued,'wrong-secret',2000),null);
+ assert.equal(await verifySession(issued+'x','session-secret',2000),null);
+ assert.equal(await verifySession(issued,'session-secret',61001),null);
+ assert.equal(await secureEqual('access-token','access-token'),true);
+ assert.equal(await secureEqual('access-token','different-token'),false);
+});
+test('portable session cookie parsing is exact and URL-decoded',()=>{
+ const request=new Request('https://example.com/',{headers:{cookie:'theme=dark; astra_session=abc%2Edef; other=1'}});
+ assert.equal(cookieValue(request,'astra_session'),'abc.def');
+ assert.equal(cookieValue(request,'missing'),undefined);
+});

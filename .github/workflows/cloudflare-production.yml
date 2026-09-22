@@ -1,0 +1,100 @@
+name: AstraForge Cloudflare production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: astraforge-cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FORGE_VAULT_KEY: ${{ secrets.FORGE_VAULT_KEY }}
+      ASTRA_ACCESS_TOKEN: ${{ secrets.ASTRA_ACCESS_TOKEN }}
+      ASTRA_SESSION_SECRET: ${{ secrets.ASTRA_SESSION_SECRET }}
+      ASTRA_WORKER_NAME: ${{ vars.ASTRA_WORKER_NAME }}
+      ASTRA_API_ORIGIN: ${{ vars.ASTRA_API_ORIGIN }}
+      ASTRA_FRONTEND_ORIGIN: ${{ vars.ASTRA_FRONTEND_ORIGIN }}
+      ASTRA_OWNER_ID: ${{ vars.ASTRA_OWNER_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
+      CLOUDFLARE_D1_DATABASE_NAME: ${{ vars.CLOUDFLARE_D1_DATABASE_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Use Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22.13.1"\n          package-manager-cache: false
+
+      - name: Enable pnpm
+        run: |
+          corepack disable || true
+          npm install --global pnpm@11.25.0
+
+      - name: Validate production configuration
+        run: |
+          node --input-type=module <<'NODE'
+          const required=[
+            'CLOUDFLARE_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','FORGE_VAULT_KEY',
+            'ASTRA_ACCESS_TOKEN','ASTRA_SESSION_SECRET','ASTRA_WORKER_NAME',
+            'ASTRA_API_ORIGIN','ASTRA_FRONTEND_ORIGIN','ASTRA_OWNER_ID',
+            'CLOUDFLARE_D1_DATABASE_ID','CLOUDFLARE_D1_DATABASE_NAME'
+          ];
+          const missing=required.filter(name=>!process.env[name]?.trim());
+          if(missing.length){
+            console.error('Missing required GitHub production configuration: '+missing.join(', '));
+            process.exit(1);
+          }
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify TypeScript
+        run: pnpm exec tsc --noEmit
+
+      - name: Run core tests
+        run: node --experimental-strip-types --test tests/core.test.ts
+
+      - name: Run database tests
+        run: python3 tests/database_test.py
+
+      - name: Build Worker bundle
+        run: pnpm build
+
+      - name: Prepare production Wrangler config
+        run: node scripts/prepare-cloudflare-deploy.mjs
+
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply DB --remote --config dist/server/wrangler.production.json
+
+      - name: Write ephemeral Worker secrets file
+        run: |
+          node --input-type=module <<'NODE'
+          import {writeFile} from 'node:fs/promises';
+          const file=process.env.RUNNER_TEMP+'/astra-secrets.json';
+          await writeFile(file,JSON.stringify({
+            FORGE_VAULT_KEY:process.env.FORGE_VAULT_KEY,
+            ASTRA_ACCESS_TOKEN:process.env.ASTRA_ACCESS_TOKEN,
+            ASTRA_SESSION_SECRET:process.env.ASTRA_SESSION_SECRET
+          }));
+          console.log('Prepared ephemeral Worker secrets file.');
+          NODE
+
+      - name: Deploy Cloudflare Worker
+        run: pnpm exec wrangler deploy --config dist/server/wrangler.production.json --secrets-file "$RUNNER_TEMP/astra-secrets.json"
+
+      - name: Verify production API boundary
+        run: |
+          status="$(curl --silent --show-error --output "$RUNNER_TEMP/astra-auth.json" --write-out '%{http_code}' "$ASTRA_API_ORIGIN/api/auth")"
+          cat "$RUNNER_TEMP/astra-auth.json"
+          test "$status" = "401"
