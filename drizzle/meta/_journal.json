@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790030953039,
+      "tag": "0000_freezing_ezekiel",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790032202704,
+      "tag": "0001_amazing_punisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790079682896,
+      "tag": "0002_salty_skrulls",
+      "breakpoints": true
+    }
+  ]
+}

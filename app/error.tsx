@@ -1,0 +1,2 @@
+'use client';
+export default function ErrorBoundary({reset}:{error:Error;reset:()=>void}){return <main style={{minHeight:'100vh',display:'grid',placeContent:'center',background:'#15191e',color:'#dce5ed',fontFamily:'system-ui',padding:32}}><h1>The workspace hit a snag.</h1><p>Your saved files are still in your account. Reload to reconnect.</p><button onClick={reset} style={{padding:12,marginTop:16,cursor:'pointer'}}>Reconnect workspace</button></main>;}

@@ -1,0 +1,66 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {validateFiles} from '../lib/templates.ts';
+import {sseData,generate,ProviderFailure} from '../lib/providers.ts';
+
+test('workspace traversal, absolute paths and non-text values are rejected',()=>{
+ for(const path of ['../secret','/etc/passwd','a/../../b','x\\y','a//b','./a','a\0b'])assert.throws(()=>validateFiles({[path]:'x'}));
+ assert.throws(()=>validateFiles({'safe.txt':42}));assert.deepEqual(validateFiles({'src/main.ts':'export {}'}),{'src/main.ts':'export {}'});
+});
+test('file count and project size bounds are enforced',()=>{
+ assert.throws(()=>validateFiles(Object.fromEntries(Array.from({length:151},(_,i)=>['f'+i,'']))));
+ assert.throws(()=>validateFiles({'large.txt':'a'.repeat(1500001)}));
+});
+test('SSE parser preserves split UTF-8 and CRLF boundaries',async()=>{
+ const bytes=new TextEncoder().encode('data: {"text":"🙂"}\r\n\r\ndata: [DONE]\n\n');
+ const stream=new ReadableStream<Uint8Array>({start(c){for(const byte of bytes)c.enqueue(new Uint8Array([byte]));c.close();}});
+ const seen=[];for await(const data of sseData(stream))seen.push(data);assert.deepEqual(seen,['{"text":"🙂"}','[DONE]']);
+});
+test('SSE multiline data and ignored comments are handled',async()=>{
+ const stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(new TextEncoder().encode(': heartbeat\ndata: one\ndata: two\n\n'));c.close();}});
+ const seen=[];for await(const data of sseData(stream))seen.push(data);assert.deepEqual(seen,['one\ntwo']);
+});
+test('truncated provider stream is never reported as complete',async()=>{
+ const original=globalThis.fetch;globalThis.fetch=async()=>new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',{headers:{'content-type':'text/event-stream'}});
+ try{let output='';await assert.rejects(async()=>{for await(const chunk of generate('openai','test-key','gpt-6-astra','system',[{role:'user',content:'hi'}],new AbortController().signal))output+=chunk;},ProviderFailure);assert.equal(output,'partial');}finally{globalThis.fetch=original;}
+});
+test('actual quota headers and usage are surfaced, reasoning and cap reach provider',async()=>{
+ const original=globalThis.fetch;let payload:any;const metadata:any[]=[];
+ globalThis.fetch=async(_url,init)=>{payload=JSON.parse(String(init?.body));return new Response('data: {"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}\n\ndata: {"usage":{"prompt_tokens":17,"completion_tokens":4},"choices":[]}\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream','x-ratelimit-remaining-requests':'23'}});};
+ try{let result='';for await(const chunk of generate('openai','test-key','gpt-6-astra','system',[{role:'user',content:'hi'}],new AbortController().signal,{maxTokens:4096,reasoning:'high',onMeta:m=>metadata.push(m)}))result+=chunk;assert.equal(result,'answer');assert.equal(payload.reasoning_effort,'high');assert.equal(payload.max_completion_tokens,4096);assert.equal(metadata[0].limits['x-ratelimit-remaining-requests'],'23');assert.equal(metadata[1].usage.prompt_tokens,17);}finally{globalThis.fetch=original;}
+});
+test('429 raises an explicit retry-after error',async()=>{
+ const original=globalThis.fetch;globalThis.fetch=async()=>new Response('{}',{status:429,headers:{'retry-after':'12'}});
+ try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal)){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.retryAfter===12);}finally{globalThis.fetch=original;}
+});
+
+import {parseAgentAction} from '../lib/agent-protocol.ts';
+test('agent protocol accepts exactly one known structured action',()=>{
+ assert.equal(parseAgentAction('{"type":"command","summary":"Run tests","command":"npm test","shell":"bash"}').type,'command');
+ assert.throws(()=>parseAgentAction('{"type":"eval","code":"anything"}'));
+ assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"bash","approved":true}'));
+ assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"host"}'));
+ assert.throws(()=>parseAgentAction('I already changed all your files.'));
+});
+test('agent rejects partial or multiple JSON actions without execution',()=>{
+ assert.throws(()=>parseAgentAction('{"type":"write_files","summary":"Edit","files":'));
+ assert.throws(()=>parseAgentAction('{"type":"done","summary":"one"}{"type":"done","summary":"two"}'));
+});
+
+import {normalizeModels} from '../lib/model-discovery.ts';
+test('catalog keeps more than 500 routes and filters non-chat models',()=>{
+ const result=normalizeModels('openrouter',{data:[...Array.from({length:650},(_,i)=>({id:'author/model-'+i,name:'Model '+i,architecture:{output_modalities:['text']},supported_parameters:['reasoning'],context_length:100000,top_provider:{max_completion_tokens:8000}})),{id:'image-only',architecture:{output_modalities:['image']}}]});
+ assert.equal(result.length,650);assert.equal(result[0].reasoning,true);assert.equal(result[0].contextWindow,100000);assert.equal(result[0].outputLimit,8000);
+});
+test('catalog normalizes native IDs and rejects malformed lists',()=>{
+ assert.deepEqual(normalizeModels('google',{models:[{name:'models/gemini-3.1-pro',supportedGenerationMethods:['generateContent']},{name:'models/embed',supportedGenerationMethods:['embedContent']}]}).map(m=>m.id),['gemini-3.1-pro']);
+ assert.throws(()=>normalizeModels('openai',{error:'bad'}));
+});
+
+import {providerHint,safeProviderDetail} from '../lib/provider-errors.ts';
+test('quota failures explain billing separately from temporary rate limits',()=>{
+ assert.match(providerHint(429,'insufficient_quota'),/credit or quota is exhausted/);
+ assert.match(providerHint(429,'rate_limit_exceeded'),/rate or quota limit/);
+ assert.match(providerHint(404,'model_not_found'),/model ID is unavailable/);
+ assert.equal(safeProviderDetail('rejected secret-value','secret-value'),'rejected [redacted]');
+});
