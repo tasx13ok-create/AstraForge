@@ -142,3 +142,23 @@ test('streamed provider errors retain inferred status and sanitized diagnostics'
  const original=globalThis.fetch,metadata:any[]=[];globalThis.fetch=async()=>new Response('data: {"error":{"type":"rate_limit_exceeded","message":"retry test-key"}}\n\n',{headers:{'content-type':'text/event-stream'}});
  try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal,{onMeta:m=>metadata.push(m)})){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.code==='rate_limit_exceeded'&&!e.message.includes('test-key'));assert.equal((metadata.at(-1) as any).error.httpStatus,429);}finally{globalThis.fetch=original;}
 });
+
+
+import {openBrowserSocket} from '../lib/browser-socket.ts';
+test('browser socket accepts Cloudflare upgrade sockets',async()=>{
+ let accepted=false;
+ const socket:any={accept(){accepted=true;},send(){},close(){},addEventListener(){}};
+ const result=await openBrowserSocket('wss://connect.browserbase.com/test',{fetcher:async()=>({webSocket:socket}) as Response,timeoutMs:1000});
+ assert.equal(result,socket);assert.equal(accepted,true);
+});
+test('browser socket falls back to a standard WebSocket client',async()=>{
+ class FakeSocket{
+  listeners=new Map<string,Array<(event:any)=>void>>();
+  constructor(_url:string){queueMicrotask(()=>this.emit('open',{}));}
+  addEventListener(type:string,listener:(event:any)=>void){this.listeners.set(type,[...(this.listeners.get(type)||[]),listener]);}
+  emit(type:string,event:any){for(const listener of this.listeners.get(type)||[])listener(event);}
+  send(_data:string){} close(_code?:number,_reason?:string){}
+ }
+ const result=await openBrowserSocket('wss://connect.browserbase.com/test',{fetcher:async()=>{throw new Error('upgrade unsupported');},WebSocketCtor:FakeSocket,timeoutMs:1000});
+ assert(result instanceof FakeSocket);
+});
