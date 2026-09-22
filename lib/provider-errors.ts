@@ -1,3 +1,5 @@
+export type ProviderIssue={code:string;detail:string;hint:string;httpStatus:number};
+
 export function safeProviderDetail(value:unknown,key=''){
  let text=typeof value==='string'?value:'';if(key)text=text.split(key).join('[redacted]');
  return text.replace(/(?:sk-|bb_live_|bb_test_)[A-Za-z0-9_-]{8,}/g,'[redacted]').replace(/Bearer\s+\S+/gi,'Bearer [redacted]').slice(0,650);
@@ -13,8 +15,12 @@ export function providerHint(status:number,code:string,provider=''){
  if(provider==='browserbase')return 'The API key identifies the Browserbase project. Check session availability and plan features; AstraForge persistent sessions require keep-alive support.';
  return 'Check the provider’s reported request error and selected model settings.';
 }
-export async function readProviderError(response:Response,key='',provider=''){
- let value:any;try{value=await response.json();}catch{value={};}
- const error=value.error||value;const code=safeProviderDetail(typeof error==='object'?error.code||error.type||'':'',key);const detail=safeProviderDetail(typeof error==='string'?error:error.message||value.message,key);
- return {code,detail,hint:providerHint(response.status,code,provider),httpStatus:response.status};
+function issueStatus(value:any,fallback:number){
+ const explicit=Number(value?.status??value?.status_code??value?.error?.status??value?.error?.status_code);if(Number.isInteger(explicit)&&explicit>=400&&explicit<=599)return explicit;
+ const error=value?.error??value,code=String(typeof error==='object'?error?.code||error?.type||'':'').toLowerCase();if(/insufficient_quota|credit_balance_exhausted|rate_limit|too_many_requests/.test(code))return 429;if(/invalid_api_key|authentication|unauthorized/.test(code))return 401;if(/permission|forbidden/.test(code))return 403;if(/model_not_found|not_found/.test(code))return 404;return fallback;
 }
+export function providerIssueFromValue(value:unknown,status=502,key='',provider=''):ProviderIssue{
+ const root=value&&typeof value==='object'?value as any:{},error=root.error??root,httpStatus=issueStatus(root,status);const code=safeProviderDetail(typeof error==='object'?String(error.code||error.type||''):'',key),detail=safeProviderDetail(typeof error==='string'?error:String(error.message||root.message||''),key);return {code,detail,hint:providerHint(httpStatus,code,provider),httpStatus};
+}
+export function providerIssueText(value:any){const head=value?.hint||value?.error||'Provider request failed.',tail=value?.code?(value.code+' · HTTP '+value.httpStatus):(value?.httpStatus?'HTTP '+value.httpStatus:'');return [head,value?.detail,tail].filter((part,index,all)=>part&&all.indexOf(part)===index).join(' ');}
+export async function readProviderError(response:Response,key='',provider=''){let value:any;try{value=await response.json();}catch{value={};}return providerIssueFromValue(value,response.status,key,provider);}

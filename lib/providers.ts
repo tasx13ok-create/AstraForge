@@ -1,4 +1,4 @@
-import {readProviderError} from './provider-errors.ts';
+import {providerIssueFromValue,readProviderError} from './provider-errors.ts';
 export const providerCatalog:Record<string,{label:string;model:string;kind:'openai'|'anthropic'|'google'|'runtime'|'git'|'plugin'|'browser';url?:string;modelsUrl?:string;streamUsage?:boolean}>={
  openai:{label:'OpenAI',model:'gpt-6-astra',kind:'openai',url:'https://api.openai.com/v1/chat/completions'},
  anthropic:{label:'Anthropic',model:'claude-fable-5-1',kind:'anthropic',url:'https://api.anthropic.com/v1/messages'},
@@ -48,7 +48,7 @@ export async function* generate(provider:string,key:string,model:string,system:s
   if(data==='[DONE]'){completed=true;break;}
   let v;try{v=JSON.parse(data);}catch{throw new ProviderFailure(502);}
   const usage=v.usage||v.usageMetadata||v.message?.usage;if(usage)options.onMeta?.({provider,model,usage});
-  if(v.error||v.type==='error')throw new ProviderFailure(502);
+  if(v.error||v.type==='error'){const issue=providerIssueFromValue(v,502,key,provider);options.onMeta?.({provider,model,error:issue});throw new ProviderFailure(issue.httpStatus,0,issue.hint+(issue.detail?' '+issue.detail:''),issue.code);}
   let chunk='';
   if(p.kind==='anthropic'){if(v.type==='content_block_delta'&&v.delta?.type==='text_delta')chunk=v.delta.text;if(v.type==='message_stop')completed=true;}
   else if(p.kind==='google'){chunk=(v.candidates?.[0]?.content?.parts||[]).map((x:{text?:string;thought?:boolean})=>x.thought?'':x.text||'').join('');if(v.candidates?.[0]?.finishReason)completed=true;}

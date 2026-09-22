@@ -1,6 +1,7 @@
 import {actor,connection,fail} from '@/lib/server';
 import {providerCatalog} from '@/lib/providers';
 import {normalizeModels} from '@/lib/model-discovery';
+import {readProviderError} from '@/lib/provider-errors';
 import cloudCatalog from '@/lib/cloud-models.json';
 import ollamaCatalog from '@/lib/ollama-models.json';
 const endpoints:Record<string,string>={openai:'https://api.openai.com/v1/models',anthropic:'https://api.anthropic.com/v1/models',google:'https://generativelanguage.googleapis.com/v1beta/models',xai:'https://api.x.ai/v1/models',deepseek:'https://api.deepseek.com/models',mistral:'https://api.mistral.ai/v1/models',together:'https://api.together.xyz/v1/models',fireworks:'https://api.fireworks.ai/inference/v1/models',groq:'https://api.groq.com/openai/v1/models'};
@@ -13,7 +14,7 @@ export async function GET(req:Request){try{
  try{
  const entries=new Map();let pageUrl=url;let pages=0;let hasMore=false;
  do{
- const r=await fetch(pageUrl,{headers,redirect:'error',signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error(`Provider model discovery failed (${r.status}).`);
+ const r=await fetch(pageUrl,{headers,redirect:'error',signal:AbortSignal.timeout(15000)});if(!r.ok){const issue=await readProviderError(r,c?.key||'',provider);if(!c&&['openrouter','ollama'].includes(provider))throw new Error(issue.hint);return Response.json({error:issue.hint,...issue},{status:issue.httpStatus});}
  const data:any=await r.json();for(const m of normalizeModels(provider,data))entries.set(m.id,m);
  pages++;hasMore=false;const next=new URL(url);
  if(provider==='google'&&data.nextPageToken){next.searchParams.set('pageToken',String(data.nextPageToken));hasMore=true;}

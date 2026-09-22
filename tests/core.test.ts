@@ -119,3 +119,13 @@ test('configured custom model remains selectable without discovery',()=>{
  assert.equal(manualModelNeedsConnection('openai:gpt-custom',[]),true);
  assert.equal(manualModelNeedsConnection('auto',[]),false);
 });
+
+import {providerIssueFromValue,providerIssueText} from '../lib/provider-errors.ts';
+test('provider issue parsing preserves streamed rate-limit detail safely',()=>{
+ const issue=providerIssueFromValue({error:{type:'rate_limit_exceeded',message:'slow down secret-key'}},502,'secret-key','openai');
+ assert.equal(issue.httpStatus,429);assert.equal(issue.code,'rate_limit_exceeded');assert.equal(issue.detail,'slow down [redacted]');assert.match(providerIssueText(issue),/rate_limit_exceeded · HTTP 429/);
+});
+test('streamed provider errors retain inferred status and sanitized diagnostics',async()=>{
+ const original=globalThis.fetch,metadata:any[]=[];globalThis.fetch=async()=>new Response('data: {"error":{"type":"rate_limit_exceeded","message":"retry test-key"}}\n\n',{headers:{'content-type':'text/event-stream'}});
+ try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal,{onMeta:m=>metadata.push(m)})){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.code==='rate_limit_exceeded'&&!e.message.includes('test-key'));assert.equal((metadata.at(-1) as any).error.httpStatus,429);}finally{globalThis.fetch=original;}
+});
