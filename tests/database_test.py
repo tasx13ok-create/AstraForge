@@ -57,4 +57,21 @@ class DatabaseInvariants(unittest.TestCase):
         self.assertEqual(self.db.execute(claim,('lease1',1500,'now','run','alice')).rowcount,1)
         self.assertEqual(self.db.execute(claim,('lease2',1500,'now','run','alice')).rowcount,0)
 
+    def test_browser_start_insert_is_exclusive_during_races(self):
+        query=sql('lib/remote-browser.ts','INSERT INTO browser_sessions')
+        def start(identifier, provider):
+            return self.db.execute(query,(identifier,'alice','p',provider,'sealed','active','now',1000,'alice','p',100)).rowcount
+        self.assertEqual(start('b1','remote-1'),1)
+        self.assertEqual(start('b2','remote-2'),0)
+        self.db.execute("UPDATE browser_sessions SET state='release_pending' WHERE id='b1'")
+        self.assertEqual(start('b3','remote-3'),0)
+        self.db.execute("UPDATE browser_sessions SET state='closed' WHERE id='b1'")
+        self.assertEqual(start('b4','remote-4'),1)
+
+    def test_expired_browser_sessions_are_scrubbed(self):
+        self.db.execute('INSERT INTO browser_sessions VALUES(?,?,?,?,?,?,?,?)',('old','alice','p','remote','sealed','active','now',50))
+        expire=sql('lib/remote-browser.ts',"UPDATE browser_sessions SET state='expired'")
+        self.assertEqual(self.db.execute(expire,('alice','p',100)).rowcount,1)
+        self.assertEqual(self.db.execute("SELECT state,secret FROM browser_sessions WHERE id='old'").fetchone(),('expired',''))
+
 if __name__ == '__main__': unittest.main()
