@@ -24,8 +24,8 @@ jobs:
 
       - name: Enable pnpm
         run: |
-          corepack enable
-          corepack prepare pnpm@11.25.0 --activate
+          corepack disable || true
+          npm install --global pnpm@11.25.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
