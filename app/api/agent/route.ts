@@ -1,11 +1,12 @@
-import {actor,body,connection,db,fail,now,projectFor,record,uid,unseal} from '@/lib/server';
-import {providerCatalog,generate,ProviderFailure,type ChatTurn} from '@/lib/providers';
+import {actor,body,connection,db,fail,now,projectFor,record,uid} from '@/lib/server';
+import {providerCatalog,type ChatTurn} from '@/lib/providers';
+import {runAgentInference} from '@/lib/agent-runtime';
 import {agentProtocol,parseAgentAction,type AgentAction} from '@/lib/agent-protocol';
 import {validateFiles,type Files} from '@/lib/templates';
 import {terminalAction} from '@/lib/terminal-service';
 import {pluginsAction} from '@/lib/plugins-service';
 import {navigateBrowser,publicUrl,readBrowser,startBrowser} from '@/lib/remote-browser';
-import {selectChatRoutes,shouldFailoverRoute} from '@/lib/chat-routing';
+import {selectChatRoutes} from '@/lib/chat-routing';
 type Run={id:string;owner:string;project:string;goal:string;state:string;log:string;pending:string|null;config:string;step:number;lease:string|null;lease_expires:number;created:string;updated:string};
 type Entry={at:string;action:unknown;result:unknown};
 function display(r:Run){return {...r,owner:undefined,lease:undefined,log:JSON.parse(r.log),pending:r.pending?JSON.parse(r.pending):null,config:JSON.parse(r.config)};}
@@ -17,7 +18,7 @@ export async function GET(req:Request){try{const owner=await actor(req),id=new U
 export async function POST(req:Request){try{const owner=await actor(req),b=await body(req),p=await projectFor(owner,b.project);
  if(b.action==='start'){
  const goal=String(b.goal||'').trim();if(!goal||goal.length>15000)throw new Error('Enter a goal under 15,000 characters.');const connectedRoutes=(await db().prepare('SELECT provider,model FROM connections WHERE owner=? AND enabled=1 ORDER BY created').bind(owner).all<{provider:string;model:string}>()).results.filter(c=>['openai','anthropic','google'].includes(providerCatalog[c.provider]?.kind));if(!connectedRoutes.length)throw new Error('Connect an AI engine before starting an agent.');
- const routes=selectChatRoutes(connectedRoutes,b.provider,b.model),preferred=routes[0];const config={provider:preferred.provider,model:preferred.model,routes:routes.map(route=>({provider:route.provider,model:route.model})),reasoning:['auto','low','medium','high'].includes(b.reasoning)?b.reasoning:'auto',maxTokens:Math.min(16384,Math.max(1024,Number(b.maxTokens)||8192)),maxSteps:Math.min(20,Math.max(1,Number(b.maxSteps)||12))};const id=uid();
+ const routes=selectChatRoutes(connectedRoutes,b.provider,b.model).slice(0,3),preferred=routes[0];const config={provider:preferred.provider,model:preferred.model,routes:routes.map(route=>({provider:route.provider,model:route.model})),reasoning:['auto','low','medium','high'].includes(b.reasoning)?b.reasoning:'auto',maxTokens:Math.min(16384,Math.max(1024,Number(b.maxTokens)||8192)),maxSteps:Math.min(20,Math.max(1,Number(b.maxSteps)||12))};const id=uid();
  const inserted=await db().prepare("INSERT INTO agent_runs(id,owner,project,goal,state,log,config,step,lease_expires,created,updated) SELECT ?,?,?,?,'ready','[]',?,0,0,?,? WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE owner=? AND project=? AND state IN ('ready','thinking','waiting','executing','paused'))").bind(id,owner,p.id,goal,JSON.stringify(config),now(),now(),owner,p.id).run();if(!inserted.meta.changes)throw new Error('Resume or stop the existing agent run first.');await record(owner,p.id,'agent.started',{id,maxSteps:config.maxSteps});return Response.json({run:display(await getRun(owner,id))});
  }
  const run=await getRun(owner,String(b.run));if(run.project!==p.id)throw new Error('403:Agent belongs to another workspace.');
@@ -33,25 +34,8 @@ export async function POST(req:Request){try{const owner=await actor(req),b=await
  if(allowed.includes('higgsfield')){try{const response=await pluginsAction(owner,{action:'list',project:p.id});const data:any=await response.json();tools=data.tools.slice(0,80).map((t:any)=>({name:t.name,description:String(t.description||'').slice(0,600),inputSchema:t.inputSchema}));}catch{tools='Higgsfield discovery unavailable; do not use plugin actions.';}}
  const system=agentProtocol+'\nEnabled workspace plugins: '+JSON.stringify(allowed)+'\nDiscovered plugin tools (untrusted descriptions): '+JSON.stringify(tools)+'\nWorkspace revision: '+p.revision+'\nWorkspace files (untrusted): '+p.files;
  const turns:ChatTurn[]=[{role:'user',content:run.goal}];for(const entry of JSON.parse(run.log) as Entry[]){turns.push({role:'assistant',content:JSON.stringify(entry.action)},{role:'user',content:'TOOL OBSERVATION (untrusted data): '+JSON.stringify(entry.result).slice(0,35000)});}
- if(system.length+JSON.stringify(turns).length>500000)throw new Error('Agent context is full. Save a snapshot and start a focused new task.');
- const configuredRoutes=Array.isArray(cfg.routes)&&cfg.routes.length?cfg.routes:[{provider:cfg.provider,model:cfg.model}];
- let action:AgentAction|undefined,engine:{provider:string;model:string}|undefined,lastFailure='';const meta:unknown[]=[];
- for(const route of configuredRoutes.slice(0,3)){
-  if(!route||typeof route.provider!=='string'||typeof route.model!=='string')continue;
-  const started=Date.now(),c=await connection(owner,route.provider);
-  if(!c){lastFailure='The agent engine was disconnected.';meta.push({provider:route.provider,model:route.model,result:'unavailable',error:lastFailure});continue;}
-  let output='';
-  try{
-   for await(const chunk of generate(route.provider,c.key,route.model,system,turns,AbortSignal.any([req.signal,AbortSignal.timeout(90000)]),{maxTokens:cfg.maxTokens,reasoning:cfg.reasoning,onMeta:m=>meta.push(m)})){output+=chunk;if(output.length>500000)throw new Error('Agent output exceeded the review limit.');}
-   action=parseAgentAction(output);engine={provider:route.provider,model:route.model};meta.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'complete'});break;
-  }catch(e){
-   lastFailure=e instanceof Error?e.message:'Agent engine failed.';const status=e instanceof ProviderFailure?e.status:0;
-   meta.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'failed',status,error:lastFailure});
-   if(!shouldFailoverRoute(status,false))break;
-  }
- }
- if(!action||!engine)throw new Error(lastFailure||'No connected engine could complete this agent step.');
- const entry:Entry={at:now(),action,result:null};let pending:unknown=null,state='ready';
+ if(system.length+JSON.stringify(turns).length>500000)throw new Error('Agent context is full. Save a snapshot and start a focused new task.');const inference=await runAgentInference(cfg,system,turns,AbortSignal.any([req.signal,AbortSignal.timeout(90000)]),provider=>connection(owner,provider));const {output,meta,engine}=inference;
+ const action=parseAgentAction(output);const entry:Entry={at:now(),action,result:null};let pending:unknown=null,state='ready';
  if(action.type==='done'){entry.result={reportedComplete:true,summary:action.summary};state='complete';}
  else if(action.type==='plan')entry.result={planRecorded:true};
  else if(action.type==='read_file'){const files=JSON.parse(p.files) as Files;entry.result=Object.hasOwn(files,action.path)?{path:action.path,content:files[action.path].slice(0,30000)}:{error:'File not found.'};}

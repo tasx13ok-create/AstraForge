@@ -20,6 +20,13 @@ test('SSE multiline data and ignored comments are handled',async()=>{
  const stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(new TextEncoder().encode(': heartbeat\ndata: one\ndata: two\n\n'));c.close();}});
  const seen=[];for await(const data of sseData(stream))seen.push(data);assert.deepEqual(seen,['one\ntwo']);
 });
+test('SSE parser emits a final event even without a trailing blank line',async()=>{
+ const stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(new TextEncoder().encode('data: {"ok":true}'));c.close();}});
+ const seen=[];for await(const data of sseData(stream))seen.push(data);assert.deepEqual(seen,['{"ok":true}']);
+});
+test('retry-after accepts both seconds and HTTP dates',()=>{
+ const now=Date.parse('2026-09-22T16:00:00Z');assert.equal(retryAfterSeconds('12',now),12);assert.equal(retryAfterSeconds('Tue, 22 Sep 2026 16:00:07 GMT',now),7);assert.equal(retryAfterSeconds('invalid',now),0);
+});
 test('truncated provider stream is never reported as complete',async()=>{
  const original=globalThis.fetch;globalThis.fetch=async()=>new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',{headers:{'content-type':'text/event-stream'}});
  try{let output='';await assert.rejects(async()=>{for await(const chunk of generate('openai','test-key','gpt-6-astra','system',[{role:'user',content:'hi'}],new AbortController().signal))output+=chunk;},ProviderFailure);assert.equal(output,'partial');}finally{globalThis.fetch=original;}
@@ -108,6 +115,7 @@ test('Browserbase plan and session errors do not ask for a separate project id',
 });
 
 import {selectChatRoutes,shouldFailoverRoute} from '../lib/chat-routing.ts';
+import {agentRoutesFromConfig,runAgentInference} from '../lib/agent-runtime.ts';
 import {buildModelPickerItems,manualModelNeedsConnection} from '../lib/model-picker-items.ts';
 test('manual model routing never silently switches providers',()=>{
  const routes=[{provider:'openai',model:'default-openai',secret:'a'},{provider:'anthropic',model:'default-anthropic',secret:'b'}];
@@ -127,6 +135,25 @@ test('auto failover retries only safe provider-local failures',()=>{
  assert.equal(shouldFailoverRoute(403,false),false);
  assert.equal(shouldFailoverRoute(400,false),false);
 });
+test('agent auto routing fails over before output and records the engine used',async()=>{
+ const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;if(calls===1)return new Response('{"error":{"type":"rate_limit_exceeded","message":"busy"}}',{status:429});return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');};
+ try{
+  const cfg={provider:'openai',model:'first',routes:[{provider:'openai',model:'first'},{provider:'xai',model:'second'}],maxTokens:1024};
+  const result=await runAgentInference(cfg,'system',[{role:'user',content:'go'}],new AbortController().signal,async()=>({key:'test-key'}));
+  assert.equal(result.output,'ok');assert.equal(result.engine.provider,'xai');assert.equal(calls,2);
+ }finally{globalThis.fetch=original;}
+});
+test('agent routing does not splice providers after partial model output',async()=>{
+ const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');};
+ try{
+  const cfg={provider:'openai',model:'first',routes:[{provider:'openai',model:'first'},{provider:'xai',model:'second'}],maxTokens:1024};
+  await assert.rejects(()=>runAgentInference(cfg,'system',[{role:'user',content:'go'}],new AbortController().signal,async()=>({key:'test-key'})),ProviderFailure);
+  assert.equal(calls,1);
+ }finally{globalThis.fetch=original;}
+});
+test('legacy agent configs still produce one route',()=>{assert.deepEqual(agentRoutesFromConfig({provider:'openai',model:'legacy'}),[{provider:'openai',model:'legacy'}]);});
 test('configured custom model remains selectable without discovery',()=>{
  const items=buildModelPickerItems([],[{provider:'openai',model:'gpt-custom'},{provider:'browserbase',model:'default'}]);
  assert(items.some(item=>item.value==='openai:gpt-custom'&&item.label.includes('configured')));
