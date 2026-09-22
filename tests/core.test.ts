@@ -96,3 +96,9 @@ test('browser navigation returns the last observation instead of hanging forever
  assert.equal(result.text,'partial');
  assert.match(result.warning||'',/stable readable document/);
 });
+
+test('Browserbase plan and session errors do not ask for a separate project id',()=>{
+ assert.match(providerHint(403,'feature_not_available','browserbase'),/keep-alive support/);
+ assert.match(providerHint(429,'rate_limit','browserbase'),/active sessions/);
+ assert.doesNotMatch(providerHint(400,'bad_request','browserbase'),/project ID/i);
+});
