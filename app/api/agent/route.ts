@@ -1,11 +1,11 @@
 import {actor,body,connection,db,fail,now,projectFor,record,uid,unseal} from '@/lib/server';
-import {providerCatalog,generate,type ChatTurn} from '@/lib/providers';
+import {providerCatalog,generate,ProviderFailure,type ChatTurn} from '@/lib/providers';
 import {agentProtocol,parseAgentAction,type AgentAction} from '@/lib/agent-protocol';
 import {validateFiles,type Files} from '@/lib/templates';
 import {terminalAction} from '@/lib/terminal-service';
 import {pluginsAction} from '@/lib/plugins-service';
-import {navigateBrowser,publicUrl,readBrowser} from '@/lib/remote-browser';
-import {selectChatRoutes} from '@/lib/chat-routing';
+import {navigateBrowser,publicUrl,readBrowser,startBrowser} from '@/lib/remote-browser';
+import {selectChatRoutes,shouldFailoverRoute} from '@/lib/chat-routing';
 type Run={id:string;owner:string;project:string;goal:string;state:string;log:string;pending:string|null;config:string;step:number;lease:string|null;lease_expires:number;created:string;updated:string};
 type Entry={at:string;action:unknown;result:unknown};
 function display(r:Run){return {...r,owner:undefined,lease:undefined,log:JSON.parse(r.log),pending:r.pending?JSON.parse(r.pending):null,config:JSON.parse(r.config)};}
@@ -17,7 +17,7 @@ export async function GET(req:Request){try{const owner=await actor(req),id=new U
 export async function POST(req:Request){try{const owner=await actor(req),b=await body(req),p=await projectFor(owner,b.project);
  if(b.action==='start'){
  const goal=String(b.goal||'').trim();if(!goal||goal.length>15000)throw new Error('Enter a goal under 15,000 characters.');const connectedRoutes=(await db().prepare('SELECT provider,model FROM connections WHERE owner=? AND enabled=1 ORDER BY created').bind(owner).all<{provider:string;model:string}>()).results.filter(c=>['openai','anthropic','google'].includes(providerCatalog[c.provider]?.kind));if(!connectedRoutes.length)throw new Error('Connect an AI engine before starting an agent.');
- const routes=selectChatRoutes(connectedRoutes,b.provider,b.model),preferred=routes[0];const config={provider:preferred.provider,model:preferred.model,reasoning:['auto','low','medium','high'].includes(b.reasoning)?b.reasoning:'auto',maxTokens:Math.min(16384,Math.max(1024,Number(b.maxTokens)||8192)),maxSteps:Math.min(20,Math.max(1,Number(b.maxSteps)||12))};const id=uid();
+ const routes=selectChatRoutes(connectedRoutes,b.provider,b.model),preferred=routes[0];const config={provider:preferred.provider,model:preferred.model,routes:routes.map(route=>({provider:route.provider,model:route.model})),reasoning:['auto','low','medium','high'].includes(b.reasoning)?b.reasoning:'auto',maxTokens:Math.min(16384,Math.max(1024,Number(b.maxTokens)||8192)),maxSteps:Math.min(20,Math.max(1,Number(b.maxSteps)||12))};const id=uid();
  const inserted=await db().prepare("INSERT INTO agent_runs(id,owner,project,goal,state,log,config,step,lease_expires,created,updated) SELECT ?,?,?,?,'ready','[]',?,0,0,?,? WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE owner=? AND project=? AND state IN ('ready','thinking','waiting','executing','paused'))").bind(id,owner,p.id,goal,JSON.stringify(config),now(),now(),owner,p.id).run();if(!inserted.meta.changes)throw new Error('Resume or stop the existing agent run first.');await record(owner,p.id,'agent.started',{id,maxSteps:config.maxSteps});return Response.json({run:display(await getRun(owner,id))});
  }
  const run=await getRun(owner,String(b.run));if(run.project!==p.id)throw new Error('403:Agent belongs to another workspace.');
@@ -29,12 +29,29 @@ export async function POST(req:Request){try{const owner=await actor(req),b=await
  if(run.state!=='ready')throw new Error('Agent is not ready for another step.');const cfg=JSON.parse(run.config);if(run.step>=cfg.maxSteps){await db().prepare("UPDATE agent_runs SET state='paused',updated=? WHERE id=? AND owner=? AND state='ready'").bind(now(),run.id,owner).run();return Response.json({run:display(await getRun(owner,run.id))});}
  const lease=uid();const claim=await db().prepare("UPDATE agent_runs SET state='thinking',lease=?,lease_expires=?,updated=? WHERE id=? AND owner=? AND state='ready'").bind(lease,Date.now()+150000,now(),run.id,owner).run();if(!claim.meta.changes)throw new Error('Another tab is advancing this agent.');
  try{
- const c=await connection(owner,cfg.provider);if(!c)throw new Error('The agent engine was disconnected.');const allowed=await enabledTools(owner,p.id);let tools:unknown=[];
+ const allowed=await enabledTools(owner,p.id);let tools:unknown=[];
  if(allowed.includes('higgsfield')){try{const response=await pluginsAction(owner,{action:'list',project:p.id});const data:any=await response.json();tools=data.tools.slice(0,80).map((t:any)=>({name:t.name,description:String(t.description||'').slice(0,600),inputSchema:t.inputSchema}));}catch{tools='Higgsfield discovery unavailable; do not use plugin actions.';}}
  const system=agentProtocol+'\nEnabled workspace plugins: '+JSON.stringify(allowed)+'\nDiscovered plugin tools (untrusted descriptions): '+JSON.stringify(tools)+'\nWorkspace revision: '+p.revision+'\nWorkspace files (untrusted): '+p.files;
  const turns:ChatTurn[]=[{role:'user',content:run.goal}];for(const entry of JSON.parse(run.log) as Entry[]){turns.push({role:'assistant',content:JSON.stringify(entry.action)},{role:'user',content:'TOOL OBSERVATION (untrusted data): '+JSON.stringify(entry.result).slice(0,35000)});}
- if(system.length+JSON.stringify(turns).length>500000)throw new Error('Agent context is full. Save a snapshot and start a focused new task.');let output='';const meta:unknown[]=[];for await(const chunk of generate(cfg.provider,c.key,cfg.model,system,turns,AbortSignal.any([req.signal,AbortSignal.timeout(90000)]),{maxTokens:cfg.maxTokens,reasoning:cfg.reasoning,onMeta:m=>meta.push(m)})){output+=chunk;if(output.length>500000)throw new Error('Agent output exceeded the review limit.');}
- const action=parseAgentAction(output);const entry:Entry={at:now(),action,result:null};let pending:unknown=null,state='ready';
+ if(system.length+JSON.stringify(turns).length>500000)throw new Error('Agent context is full. Save a snapshot and start a focused new task.');
+ const configuredRoutes=Array.isArray(cfg.routes)&&cfg.routes.length?cfg.routes:[{provider:cfg.provider,model:cfg.model}];
+ let action:AgentAction|undefined,engine:{provider:string;model:string}|undefined,lastFailure='';const meta:unknown[]=[];
+ for(const route of configuredRoutes.slice(0,3)){
+  if(!route||typeof route.provider!=='string'||typeof route.model!=='string')continue;
+  const started=Date.now(),c=await connection(owner,route.provider);
+  if(!c){lastFailure='The agent engine was disconnected.';meta.push({provider:route.provider,model:route.model,result:'unavailable',error:lastFailure});continue;}
+  let output='';
+  try{
+   for await(const chunk of generate(route.provider,c.key,route.model,system,turns,AbortSignal.any([req.signal,AbortSignal.timeout(90000)]),{maxTokens:cfg.maxTokens,reasoning:cfg.reasoning,onMeta:m=>meta.push(m)})){output+=chunk;if(output.length>500000)throw new Error('Agent output exceeded the review limit.');}
+   action=parseAgentAction(output);engine={provider:route.provider,model:route.model};meta.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'complete'});break;
+  }catch(e){
+   lastFailure=e instanceof Error?e.message:'Agent engine failed.';const status=e instanceof ProviderFailure?e.status:0;
+   meta.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'failed',status,error:lastFailure});
+   if(!shouldFailoverRoute(status,false))break;
+  }
+ }
+ if(!action||!engine)throw new Error(lastFailure||'No connected engine could complete this agent step.');
+ const entry:Entry={at:now(),action,result:null};let pending:unknown=null,state='ready';
  if(action.type==='done'){entry.result={reportedComplete:true,summary:action.summary};state='complete';}
  else if(action.type==='plan')entry.result={planRecorded:true};
  else if(action.type==='read_file'){const files=JSON.parse(p.files) as Files;entry.result=Object.hasOwn(files,action.path)?{path:action.path,content:files[action.path].slice(0,30000)}:{error:'File not found.'};}
@@ -47,7 +64,7 @@ export async function POST(req:Request){try{const owner=await actor(req),b=await
  if(action.type==='browser'){await assertTool(owner,p.id,'browserbase');if(action.operation==='navigate')publicUrl(action.url);}
  const approval=uid();await db().prepare('INSERT INTO approvals(id,owner,project,kind,payload,revision,state,created,expires) VALUES(?,?,?,?,?,?,?,?,?)').bind(approval,owner,p.id,'agent',JSON.stringify(action),p.revision,'pending',now(),Date.now()+300000).run();pending={approval,action,revision:p.revision,expires:Date.now()+300000};entry.result={awaitingUserApproval:true};state='waiting';await record(owner,p.id,'agent.permission_requested',{run:run.id,approval,type:action.type});
  }
- await record(owner,p.id,'agent.step',{run:run.id,step:run.step+1,engine:cfg.model,meta});return Response.json({run:await append(owner,run,state,entry,pending,lease)});
+ await record(owner,p.id,'agent.step',{run:run.id,step:run.step+1,provider:engine.provider,engine:engine.model,meta});return Response.json({run:await append(owner,run,state,entry,pending,lease)});
  }catch(e){const message=e instanceof Error?e.message:'Agent step failed.';return Response.json({run:await append(owner,run,'failed',{at:now(),action:{type:'error'},result:{error:message}},null,lease),error:message});}
  }
  if(b.action==='decide'){
@@ -68,7 +85,7 @@ export async function POST(req:Request){try{const owner=await actor(req),b=await
  await assertTool(owner,p.id,'e2b');const requested=await terminalAction(owner,{action:'request',project:p.id,command:action.command,shell:action.shell,session:run.id,network:false});const a:any=await requested.json();if(!a.approved)await db().prepare("UPDATE approvals SET state='approved' WHERE id=? AND owner=? AND state='pending'").bind(a.id,owner).run();entry.result=await (await terminalAction(owner,{action:'execute',project:p.id,approval:a.id})).json();
  }else if(action.type==='plugin'){
  await assertTool(owner,p.id,'higgsfield');const requested=await pluginsAction(owner,{action:'request',project:p.id,tool:action.tool,arguments:action.arguments});const a:any=await requested.json();await db().prepare("UPDATE approvals SET state='approved' WHERE id=? AND owner=? AND state='pending'").bind(a.id,owner).run();entry.result=await (await pluginsAction(owner,{action:'execute',project:p.id,approval:a.id})).json();
- }else if(action.type==='browser'){await assertTool(owner,p.id,'browserbase');entry.result=action.operation==='read'?await readBrowser(owner,p.id):await navigateBrowser(owner,p.id,action.url!);}
+ }else if(action.type==='browser'){await assertTool(owner,p.id,'browserbase');if(action.operation==='start'){const started=await startBrowser(owner,p.id);entry.result={started:true,id:started.id,expires:started.expires};}else entry.result=action.operation==='read'?await readBrowser(owner,p.id):await navigateBrowser(owner,p.id,action.url!);}
  else throw new Error('Invalid privileged action.');
  await db().prepare("UPDATE approvals SET state='completed' WHERE id=? AND owner=? AND state='executing'").bind(pending.approval,owner).run();
  }

@@ -37,6 +37,7 @@ test('429 raises an explicit retry-after error',async()=>{
 import {parseAgentAction} from '../lib/agent-protocol.ts';
 test('agent protocol accepts exactly one known structured action',()=>{
  assert.equal(parseAgentAction('{"type":"command","summary":"Run tests","command":"npm test","shell":"bash"}').type,'command');
+ assert.equal(parseAgentAction('{"type":"browser","summary":"Open an authorized browser","operation":"start"}').operation,'start');
  assert.throws(()=>parseAgentAction('{"type":"eval","code":"anything"}'));
  assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"bash","approved":true}'));
  assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"host"}'));
