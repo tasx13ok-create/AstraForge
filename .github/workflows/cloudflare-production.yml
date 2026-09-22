@@ -1,9 +1,6 @@
 name: AstraForge Cloudflare production
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
