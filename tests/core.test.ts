@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {validateFiles} from '../lib/templates.ts';
-import {sseData,generate,ProviderFailure} from '../lib/providers.ts';
+import {sseData,generate,ProviderFailure,retryAfterSeconds} from '../lib/providers.ts';
 
 test('workspace traversal, absolute paths and non-text values are rejected',()=>{
  for(const path of ['../secret','/etc/passwd','a/../../b','x\\y','a//b','./a','a\0b'])assert.throws(()=>validateFiles({[path]:'x'}));
@@ -33,10 +33,14 @@ test('429 raises an explicit retry-after error',async()=>{
  const original=globalThis.fetch;globalThis.fetch=async()=>new Response('{}',{status:429,headers:{'retry-after':'12'}});
  try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal)){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.retryAfter===12);}finally{globalThis.fetch=original;}
 });
+test('retry-after supports HTTP dates and rejects nonsense',()=>{
+ const now=Date.parse('2026-09-22T16:00:00Z');assert.equal(retryAfterSeconds('Tue, 22 Sep 2026 16:00:09 GMT',now),9);assert.equal(retryAfterSeconds('n/a',now),0);assert.equal(retryAfterSeconds('999999',now),86400);
+});
 
 import {parseAgentAction} from '../lib/agent-protocol.ts';
 test('agent protocol accepts exactly one known structured action',()=>{
  assert.equal(parseAgentAction('{"type":"command","summary":"Run tests","command":"npm test","shell":"bash"}').type,'command');
+ assert.deepEqual(parseAgentAction('{"type":"browser","summary":"Open an authorized browser","operation":"start"}'),{type:'browser',summary:'Open an authorized browser',operation:'start'});
  assert.throws(()=>parseAgentAction('{"type":"eval","code":"anything"}'));
  assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"bash","approved":true}'));
  assert.throws(()=>parseAgentAction('{"type":"command","summary":"Run","command":"npm test","shell":"host"}'));
@@ -140,4 +144,24 @@ test('provider issue parsing preserves streamed rate-limit detail safely',()=>{
 test('streamed provider errors retain inferred status and sanitized diagnostics',async()=>{
  const original=globalThis.fetch,metadata:any[]=[];globalThis.fetch=async()=>new Response('data: {"error":{"type":"rate_limit_exceeded","message":"retry test-key"}}\n\n',{headers:{'content-type':'text/event-stream'}});
  try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal,{onMeta:m=>metadata.push(m)})){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.code==='rate_limit_exceeded'&&!e.message.includes('test-key'));assert.equal((metadata.at(-1) as any).error.httpStatus,429);}finally{globalThis.fetch=original;}
+});
+
+
+import {openBrowserSocket} from '../lib/browser-socket.ts';
+test('browser socket accepts Cloudflare upgrade sockets',async()=>{
+ let accepted=false;
+ const socket:any={accept(){accepted=true;},send(){},close(){},addEventListener(){}};
+ const result=await openBrowserSocket('wss://connect.browserbase.com/test',{fetcher:async()=>({webSocket:socket}) as Response,timeoutMs:1000});
+ assert.equal(result,socket);assert.equal(accepted,true);
+});
+test('browser socket falls back to a standard WebSocket client',async()=>{
+ class FakeSocket{
+  listeners=new Map<string,Array<(event:any)=>void>>();
+  constructor(_url:string){queueMicrotask(()=>this.emit('open',{}));}
+  addEventListener(type:string,listener:(event:any)=>void){this.listeners.set(type,[...(this.listeners.get(type)||[]),listener]);}
+  emit(type:string,event:any){for(const listener of this.listeners.get(type)||[])listener(event);}
+  send(_data:string){} close(_code?:number,_reason?:string){}
+ }
+ const result=await openBrowserSocket('wss://connect.browserbase.com/test',{fetcher:async()=>{throw new Error('upgrade unsupported');},WebSocketCtor:FakeSocket,timeoutMs:1000});
+ assert(result instanceof FakeSocket);
 });
