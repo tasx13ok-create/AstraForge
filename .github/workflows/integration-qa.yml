@@ -3,11 +3,18 @@ name: AstraForge integration QA
 on:
   push:
     branches:
-      - astra-integration
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: astraforge-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
