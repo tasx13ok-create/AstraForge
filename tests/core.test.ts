@@ -129,7 +129,8 @@ test('auto failover retries only safe provider-local failures',()=>{
 });
 test('configured custom model remains selectable without discovery',()=>{
  const items=buildModelPickerItems([],[{provider:'openai',model:'gpt-custom'},{provider:'browserbase',model:'default'}]);
- assert(items.some(item=>item.value==='openai:gpt-custom'&&item.label.includes('configured')));
+ assert(items.some(item=>item.value==='openai:gpt-custom'&&item.label.includes('configured')&&item.group==='OpenAI'));
+ assert(items.some(item=>item.value==='auto'&&item.group==='Astra'));
  assert(!items.some(item=>item.value==='browserbase:default'));
  assert.equal(manualModelNeedsConnection('openai:gpt-custom',[{provider:'openai',model:'gpt-custom'}]),false);
  assert.equal(manualModelNeedsConnection('openai:gpt-custom',[]),true);
