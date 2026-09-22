@@ -8,3 +8,10 @@ export function selectChatRoutes<T extends InferenceRoute>(routes:T[],preferred?
  if(model!==undefined&&(typeof model!=='string'||!model.trim()||model.length>180))throw new Error('Invalid model.');
  return [{...match,model:typeof model==='string'?model:match.model}];
 }
+
+export function shouldFailoverRoute(status:number,hasCommittedOutput:boolean){
+ if(status===0)return true;
+ if(status===429||status>=500)return true;
+ if(!hasCommittedOutput&&[401,404,408].includes(status))return true;
+ return false;
+}

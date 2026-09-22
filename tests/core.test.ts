@@ -103,7 +103,7 @@ test('Browserbase plan and session errors do not ask for a separate project id',
  assert.doesNotMatch(providerHint(400,'bad_request','browserbase'),/project ID/i);
 });
 
-import {selectChatRoutes} from '../lib/chat-routing.ts';
+import {selectChatRoutes,shouldFailoverRoute} from '../lib/chat-routing.ts';
 import {buildModelPickerItems,manualModelNeedsConnection} from '../lib/model-picker-items.ts';
 test('manual model routing never silently switches providers',()=>{
  const routes=[{provider:'openai',model:'default-openai',secret:'a'},{provider:'anthropic',model:'default-anthropic',secret:'b'}];
@@ -112,6 +112,16 @@ test('manual model routing never silently switches providers',()=>{
  assert.throws(()=>selectChatRoutes(routes,'google','gemini-custom'),/not connected/);
  const agentRoutes=[{provider:'openai',model:'default-openai'},{provider:'anthropic',model:'default-anthropic'}];
  assert.deepEqual(selectChatRoutes(agentRoutes,'anthropic','claude-custom'),[{provider:'anthropic',model:'claude-custom'}]);
+});
+test('auto failover retries only safe provider-local failures',()=>{
+ assert.equal(shouldFailoverRoute(429,false),true);
+ assert.equal(shouldFailoverRoute(503,true),true);
+ assert.equal(shouldFailoverRoute(0,true),true);
+ assert.equal(shouldFailoverRoute(401,false),true);
+ assert.equal(shouldFailoverRoute(404,false),true);
+ assert.equal(shouldFailoverRoute(401,true),false);
+ assert.equal(shouldFailoverRoute(403,false),false);
+ assert.equal(shouldFailoverRoute(400,false),false);
 });
 test('configured custom model remains selectable without discovery',()=>{
  const items=buildModelPickerItems([],[{provider:'openai',model:'gpt-custom'},{provider:'browserbase',model:'default'}]);
