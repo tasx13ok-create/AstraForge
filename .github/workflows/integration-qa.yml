@@ -1,0 +1,73 @@
+name: AstraForge integration QA
+
+on:
+  push:
+    branches:
+      - astra-integration
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+
+      - name: Enable pnpm
+        run: |
+          corepack disable || true
+          npm install --global pnpm@11.25.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript
+        id: typescript
+        continue-on-error: true
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: pnpm lint
+
+      - name: Core protocol tests
+        id: core_tests
+        continue-on-error: true
+        run: node --experimental-strip-types --test tests/core.test.ts
+
+      - name: Database invariants
+        id: database_tests
+        continue-on-error: true
+        run: python3 tests/database_test.py
+
+      - name: Production build
+        id: build
+        continue-on-error: true
+        run: pnpm build
+
+      - name: Enforce verification gate
+        if: always()
+        env:
+          TYPESCRIPT: ${{ steps.typescript.outcome }}
+          LINT: ${{ steps.lint.outcome }}
+          CORE_TESTS: ${{ steps.core_tests.outcome }}
+          DATABASE_TESTS: ${{ steps.database_tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+        run: |
+          printf 'TypeScript: %s\nLint: %s\nCore tests: %s\nDatabase tests: %s\nBuild: %s\n' \
+            "$TYPESCRIPT" "$LINT" "$CORE_TESTS" "$DATABASE_TESTS" "$BUILD"
+          test "$TYPESCRIPT" = success
+          test "$LINT" = success
+          test "$CORE_TESTS" = success
+          test "$DATABASE_TESTS" = success
+          test "$BUILD" = success
