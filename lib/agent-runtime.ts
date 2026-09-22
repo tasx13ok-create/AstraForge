@@ -61,6 +61,7 @@ export async function runAgentInference(
     ms:Date.now()-started,
     result:'interrupted',
     status,
+    retryAfter:error instanceof ProviderFailure?error.retryAfter:0,
     error:error instanceof Error?error.message:'Unknown provider error.'
    });
    if(signal.aborted)throw error;

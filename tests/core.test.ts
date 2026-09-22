@@ -114,6 +114,16 @@ test('Browserbase plan and session errors do not ask for a separate project id',
  assert.doesNotMatch(providerHint(400,'bad_request','browserbase'),/project ID/i);
 });
 
+import {browserSessionExpiry} from '../lib/browser-session.ts';
+test('browser sessions honor provider expiry without exceeding the requested lifetime',()=>{
+ const now=Date.parse('2026-09-22T16:00:00Z');
+ assert.equal(browserSessionExpiry('2026-09-22T16:05:00Z',now),now+300000);
+ assert.equal(browserSessionExpiry(undefined,now),now+600000);
+ assert.equal(browserSessionExpiry('2026-09-22T16:30:00Z',now),now+600000);
+ assert.throws(()=>browserSessionExpiry('not-a-date',now),/invalid session expiry/);
+ assert.throws(()=>browserSessionExpiry('2026-09-22T15:59:59Z',now),/invalid session expiry/);
+});
+
 import {selectChatRoutes,shouldFailoverRoute} from '../lib/chat-routing.ts';
 import {agentRoutesFromConfig,runAgentInference} from '../lib/agent-runtime.ts';
 import {buildModelPickerItems,manualModelNeedsConnection} from '../lib/model-picker-items.ts';
@@ -137,11 +147,12 @@ test('auto failover retries only safe provider-local failures',()=>{
 });
 test('agent auto routing fails over before output and records the engine used',async()=>{
  const original=globalThis.fetch;let calls=0;
- globalThis.fetch=async()=>{calls++;if(calls===1)return new Response('{"error":{"type":"rate_limit_exceeded","message":"busy"}}',{status:429});return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');};
+ globalThis.fetch=async()=>{calls++;if(calls===1)return new Response('{"error":{"type":"rate_limit_exceeded","message":"busy"}}',{status:429,headers:{'retry-after':'9'}});return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');};
  try{
   const cfg={provider:'openai',model:'first',routes:[{provider:'openai',model:'first'},{provider:'xai',model:'second'}],maxTokens:1024};
   const result=await runAgentInference(cfg,'system',[{role:'user',content:'go'}],new AbortController().signal,async()=>({key:'test-key'}));
-  assert.equal(result.output,'ok');assert.equal(result.engine.provider,'xai');assert.equal(calls,2);
+  const failure=result.meta.find((item):item is Record<string,unknown>=>typeof item==='object'&&item!==null&&(item as Record<string,unknown>).status===429);
+  assert.equal(result.output,'ok');assert.equal(result.engine.provider,'xai');assert.equal(calls,2);assert.equal(failure?.retryAfter,9);
  }finally{globalThis.fetch=original;}
 });
 test('agent routing does not splice providers after partial model output',async()=>{

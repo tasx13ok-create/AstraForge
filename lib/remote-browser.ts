@@ -1,6 +1,7 @@
 import {readProviderError} from './provider-errors';
 import {navigateAndObserve,readPageObservation,type CdpCall} from './browser-cdp';
 import {openBrowserSocket} from './browser-socket';
+import {browserSessionExpiry} from './browser-session';
 import {connection,db,now,record,seal,uid,unseal} from './server';
 type BrowserRow={id:string;owner:string;project:string;provider_id:string;secret:string;state:string;expires:number};
 class BrowserServiceError extends Error {status:number;code?:string;constructor(status:number,message:string,code?:string){super(message);this.status=status;this.code=code;}}
@@ -16,7 +17,7 @@ export async function startBrowser(owner:string,project:string){
  const session=await browserApi(owner,'',{timeout:600,keepAlive:true,browserSettings:{viewport:{width:1280,height:800},solveCaptchas:false,recordSession:false,logSession:false,ignoreCertificateErrors:false}});
  if(typeof session.id!=='string'||!session.connectUrl)throw new Error('Browser service returned an invalid session.');
  let stored=false;
- try{const debug=await browserApi(owner,'/'+encodeURIComponent(session.id)+'/debug');const live=serviceUrl(debug.debuggerFullscreenUrl);const connect=serviceUrl(session.connectUrl,'wss:');const id=uid(),expires=Date.now()+600000,secret=await seal(owner,JSON.stringify({live,connect}));
+ try{const debug=await browserApi(owner,'/'+encodeURIComponent(session.id)+'/debug');const live=serviceUrl(debug.debuggerFullscreenUrl);const connect=serviceUrl(session.connectUrl,'wss:');const id=uid(),expires=browserSessionExpiry(session.expiresAt),secret=await seal(owner,JSON.stringify({live,connect}));
  const inserted=await db().prepare("INSERT INTO browser_sessions(id,owner,project,provider_id,secret,state,created,expires) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM browser_sessions WHERE owner=? AND project=? AND state IN ('active','release_pending') AND expires>?)").bind(id,owner,project,session.id,secret,'active',now(),expires,owner,project,Date.now()).run();if(!inserted.meta.changes)throw new Error('Another browser session became active first. Open it or end it before starting another.');stored=true;
  await record(owner,project,'browser.started',{id,expires}).catch(()=>{});return {id,liveUrl:live,expires};
  }catch(e){if(!stored)await browserApi(owner,'/'+encodeURIComponent(session.id),{status:'REQUEST_RELEASE'}).catch(()=>{});throw e;}

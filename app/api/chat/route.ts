@@ -40,7 +40,7 @@ export async function POST(req:Request){try{
  }
  if(cancelled||req.signal.aborted){status='stopped';break;}if(!verified)throw new Error('Continuation could not be verified.');status='complete';events.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'complete'});break;
  }catch(e){
- lastFailure=e instanceof Error?e.message:'Unknown upstream error.';events.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'interrupted',status:e instanceof ProviderFailure?e.status:0,error:lastFailure});await persist();
+ lastFailure=e instanceof Error?e.message:'Unknown upstream error.';events.push({provider:route.provider,model:route.model,ms:Date.now()-started,result:'interrupted',status:e instanceof ProviderFailure?e.status:0,retryAfter:e instanceof ProviderFailure?e.retryAfter:0,error:lastFailure});await persist();
  // Manual routes contain one engine. Auto route retries only provider-local or temporary failures; 403 and ordinary client/content errors are never bypassed.
  const failureStatus=e instanceof ProviderFailure?e.status:0;if(!shouldFailoverRoute(failureStatus,output.length>0))break;
  if(req.signal.aborted||cancelled){status='stopped';break;}
