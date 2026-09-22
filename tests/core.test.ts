@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {validateFiles} from '../lib/templates.ts';
-import {sseData,generate,ProviderFailure} from '../lib/providers.ts';
+import {sseData,generate,ProviderFailure,retryAfterSeconds} from '../lib/providers.ts';
 
 test('workspace traversal, absolute paths and non-text values are rejected',()=>{
  for(const path of ['../secret','/etc/passwd','a/../../b','x\\y','a//b','./a','a\0b'])assert.throws(()=>validateFiles({[path]:'x'}));
@@ -32,6 +32,9 @@ test('actual quota headers and usage are surfaced, reasoning and cap reach provi
 test('429 raises an explicit retry-after error',async()=>{
  const original=globalThis.fetch;globalThis.fetch=async()=>new Response('{}',{status:429,headers:{'retry-after':'12'}});
  try{await assert.rejects(async()=>{for await(const _ of generate('openai','test-key','gpt-6-astra','system',[],new AbortController().signal)){}},(e:any)=>e instanceof ProviderFailure&&e.status===429&&e.retryAfter===12);}finally{globalThis.fetch=original;}
+});
+test('retry-after supports HTTP dates and rejects nonsense',()=>{
+ const now=Date.parse('2026-09-22T16:00:00Z');assert.equal(retryAfterSeconds('Tue, 22 Sep 2026 16:00:09 GMT',now),9);assert.equal(retryAfterSeconds('n/a',now),0);assert.equal(retryAfterSeconds('999999',now),86400);
 });
 
 import {parseAgentAction} from '../lib/agent-protocol.ts';
