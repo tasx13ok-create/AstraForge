@@ -64,3 +64,35 @@ test('quota failures explain billing separately from temporary rate limits',()=>
  assert.match(providerHint(404,'model_not_found'),/model ID is unavailable/);
  assert.equal(safeProviderDetail('rejected secret-value','secret-value'),'rejected [redacted]');
 });
+
+
+import {navigateAndObserve} from '../lib/browser-cdp.ts';
+test('browser navigation waits for a readable document and returns the observation',async()=>{
+ let clock=0,reads=0;
+ const call=async(method:string)=>{
+  if(method==='Page.navigate')return {frameId:'frame-1'};
+  if(method==='Runtime.evaluate'){
+   reads++;
+   const value=reads===1?{url:'https://example.com/',title:'',text:'',readyState:'loading'}:{url:'https://example.com/',title:'Example Domain',text:'Example Domain',readyState:'complete'};
+   return {result:{value:JSON.stringify(value)}};
+  }
+  throw new Error('Unexpected CDP method '+method);
+ };
+ const result=await navigateAndObserve(call,'session-1','https://example.com/',{timeoutMs:1000,pollMs:100,minSettleMs:200,now:()=>clock,sleep:async ms=>{clock+=ms;}});
+ assert.equal(result.settled,true);
+ assert.equal(result.title,'Example Domain');
+ assert.equal(result.text,'Example Domain');
+ assert.equal(result.readyState,'complete');
+});
+test('browser navigation returns the last observation instead of hanging forever',async()=>{
+ let clock=0;
+ const call=async(method:string)=>{
+  if(method==='Page.navigate')return {};
+  if(method==='Runtime.evaluate')return {result:{value:JSON.stringify({url:'https://slow.example/',title:'Loading',text:'partial',readyState:'loading'})}};
+  throw new Error('Unexpected CDP method '+method);
+ };
+ const result=await navigateAndObserve(call,'session-1','https://slow.example/',{timeoutMs:300,pollMs:100,minSettleMs:0,now:()=>clock,sleep:async ms=>{clock+=ms;}});
+ assert.equal(result.settled,false);
+ assert.equal(result.text,'partial');
+ assert.match(result.warning||'',/stable readable document/);
+});
