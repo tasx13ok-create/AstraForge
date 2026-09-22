@@ -1,0 +1,46 @@
+name: AstraForge integration QA
+
+on:
+  push:
+    branches:
+      - astra-integration
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.1"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.25.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Core protocol tests
+        run: node --experimental-strip-types --test tests/core.test.ts
+
+      - name: Database invariants
+        run: python3 tests/database_test.py
+
+      - name: Production build
+        run: pnpm build
