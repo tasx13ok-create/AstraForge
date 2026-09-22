@@ -22,12 +22,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Use Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22.13.1"
+          package-manager-cache: false
 
       - name: Enable pnpm
         run: |
@@ -75,6 +76,31 @@ jobs:
         continue-on-error: true
         run: pnpm build
 
+      - name: Validate generated Cloudflare deployment
+        id: worker_dry_run
+        continue-on-error: true
+        env:
+          ASTRA_WORKER_NAME: astraforge-ci
+          ASTRA_API_ORIGIN: https://api.example.com
+          ASTRA_FRONTEND_ORIGIN: https://app.example.com
+          ASTRA_OWNER_ID: ci-owner
+          CLOUDFLARE_D1_DATABASE_ID: 00000000-0000-4000-8000-000000000001
+          CLOUDFLARE_D1_DATABASE_NAME: astraforge-ci
+        run: |
+          node scripts/prepare-cloudflare-deploy.mjs
+          cat > "$RUNNER_TEMP/astra-ci-secrets.json" <<'JSON'
+          {
+            "FORGE_VAULT_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "ASTRA_ACCESS_TOKEN": "ci-access-token",
+            "ASTRA_SESSION_SECRET": "ci-session-secret"
+          }
+          JSON
+          pnpm exec wrangler deploy \
+            --dry-run \
+            --config dist/server/wrangler.production.json \
+            --secrets-file "$RUNNER_TEMP/astra-ci-secrets.json" \
+            --outdir "$RUNNER_TEMP/astra-worker-dry-run"
+
       - name: Enforce verification gate
         if: always()
         env:
@@ -84,11 +110,13 @@ jobs:
           CORE_TESTS: ${{ steps.core_tests.outcome }}
           DATABASE_TESTS: ${{ steps.database_tests.outcome }}
           BUILD: ${{ steps.build.outcome }}
+          WORKER_DRY_RUN: ${{ steps.worker_dry_run.outcome }}
         run: |
-          printf 'TypeScript: %s\nRepository lint (legacy debt visibility): %s\nDeployment lint: %s\nCore tests: %s\nDatabase tests: %s\nBuild: %s\n' \
-            "$TYPESCRIPT" "$REPOSITORY_LINT" "$DEPLOYMENT_LINT" "$CORE_TESTS" "$DATABASE_TESTS" "$BUILD"
+          printf 'TypeScript: %s\nRepository lint (legacy debt visibility): %s\nDeployment lint: %s\nCore tests: %s\nDatabase tests: %s\nBuild: %s\nWorker dry run: %s\n' \
+            "$TYPESCRIPT" "$REPOSITORY_LINT" "$DEPLOYMENT_LINT" "$CORE_TESTS" "$DATABASE_TESTS" "$BUILD" "$WORKER_DRY_RUN"
           test "$TYPESCRIPT" = success
           test "$DEPLOYMENT_LINT" = success
           test "$CORE_TESTS" = success
           test "$DATABASE_TESTS" = success
           test "$BUILD" = success
+          test "$WORKER_DRY_RUN" = success
