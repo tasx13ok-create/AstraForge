@@ -5,6 +5,14 @@ import Workspace from '@/components/forge/workspace';
 
 type State='checking'|'authenticated'|'login'|'error';
 
+function apiError(value:unknown,fallback:string){
+ if(value&&typeof value==='object'&&'error' in value){
+  const error=(value as {error?:unknown}).error;
+  if(typeof error==='string'&&error.trim())return error;
+ }
+ return fallback;
+}
+
 export default function AccessGate(){
  const [state,setState]=useState<State>('checking');
  const [token,setToken]=useState('');
@@ -18,8 +26,8 @@ export default function AccessGate(){
     if(!active)return;
     if(response.ok){setState('authenticated');return;}
     if(response.status===401){setState('login');return;}
-    const data=await response.json().catch(()=>({}));
-    setMessage(typeof data.error==='string'?data.error:'AstraForge authentication is unavailable.');
+    const data:unknown=await response.json().catch(()=>null);
+    setMessage(apiError(data,'AstraForge authentication is unavailable.'));
     setState('error');
    })
    .catch(()=>{
@@ -31,7 +39,8 @@ export default function AccessGate(){
  async function submit(event:FormEvent){
   event.preventDefault();
   if(!token||busy)return;
-  setBusy(true);setMessage('');
+  setBusy(true);
+  setMessage('');
   try{
    const response=await fetch('/api/auth',{
     method:'POST',
@@ -39,8 +48,8 @@ export default function AccessGate(){
     credentials:'include',
     body:JSON.stringify({token})
    });
-   const data=await response.json().catch(()=>({}));
-   if(!response.ok)throw new Error(typeof data.error==='string'?data.error:'Access denied.');
+   const data:unknown=await response.json().catch(()=>null);
+   if(!response.ok)throw new Error(apiError(data,'Access denied.'));
    setToken('');
    setState('authenticated');
   }catch(error){
@@ -57,7 +66,7 @@ export default function AccessGate(){
    {state==='checking'&&<p style={{margin:0,color:'#aeb7c5'}}>Connecting to the production runtime…</p>}
    {state==='error'&&<>
     <p style={{color:'#ffb4b4',lineHeight:1.5}}>{message}</p>
-    <button type="button" onClick={()=>location.reload()} style={{width:'100%',border:0,borderRadius:14,padding:'12px 16px',fontWeight:700,cursor:'pointer'}}>Retry</button>
+    <button type="button" onClick={()=>window.location.reload()} style={{width:'100%',border:0,borderRadius:14,padding:'12px 16px',fontWeight:700,cursor:'pointer'}}>Retry</button>
    </>}
    {state==='login'&&<form onSubmit={submit}>
     <p style={{margin:'0 0 18px',color:'#aeb7c5',lineHeight:1.5}}>Enter the private AstraForge access token configured on the server. It is exchanged for an HttpOnly session cookie and is not saved by this page.</p>
